@@ -1,7 +1,12 @@
+using System.Text;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Serilog;
+using TechBookRentalBackend.Api.Data;
 using TechBookRentalBackend.Api.Middleware;
 using TechBookRentalBackend.Api.Models;
 using TechBookRentalBackend.Api.Services;
@@ -24,6 +29,38 @@ try
     // Use Serilog
     builder.Host.UseSerilog();
 
+    // Configure Database
+    var connectionString = Environment.GetEnvironmentVariable("DATABASE_CONNECTION_STRING")
+        ?? builder.Configuration.GetConnectionString("DefaultConnection");
+
+    builder.Services.AddDbContext<AppDbContext>(options =>
+        options.UseNpgsql(connectionString));
+
+    // Configure JWT
+    builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+
+    var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET")
+        ?? builder.Configuration["Jwt:Secret"]
+        ?? throw new InvalidOperationException("JWT Secret not configured");
+
+    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(options =>
+        {
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidateAudience = true,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                ValidIssuer = builder.Configuration["Jwt:Issuer"],
+                ValidAudience = builder.Configuration["Jwt:Audience"],
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
+                ClockSkew = TimeSpan.Zero
+            };
+        });
+
+    builder.Services.AddAuthorization();
+
     // Add services to the container
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen(options =>
@@ -33,6 +70,32 @@ try
             Title = "TechBook Rental API",
             Version = "v1",
             Description = "API for TechBook Rental Backend Service - Kazakhstan"
+        });
+
+        // Add JWT authentication to Swagger
+        options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+        {
+            Name = "Authorization",
+            Type = SecuritySchemeType.Http,
+            Scheme = "bearer",
+            BearerFormat = "JWT",
+            In = ParameterLocation.Header,
+            Description = "Enter your JWT token"
+        });
+
+        options.AddSecurityRequirement(new OpenApiSecurityRequirement
+        {
+            {
+                new OpenApiSecurityScheme
+                {
+                    Reference = new OpenApiReference
+                    {
+                        Type = ReferenceType.SecurityScheme,
+                        Id = "Bearer"
+                    }
+                },
+                Array.Empty<string>()
+            }
         });
     });
 
@@ -50,8 +113,12 @@ try
     // Register Zone Service
     builder.Services.AddSingleton<IZoneService, ZoneService>();
 
+    // Register Auth Service
+    builder.Services.AddScoped<IAuthService, AuthService>();
+
     // Add Health Checks
-    builder.Services.AddHealthChecks();
+    builder.Services.AddHealthChecks()
+        .AddNpgSql(connectionString!, name: "database");
 
     // Configure CORS
     builder.Services.AddCors(options =>
@@ -83,6 +150,14 @@ try
 
     var app = builder.Build();
 
+    // Apply migrations automatically in development
+    if (app.Environment.IsDevelopment())
+    {
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        db.Database.Migrate();
+    }
+
     // Global exception handling
     app.UseExceptionHandling();
 
@@ -104,6 +179,8 @@ try
     }
 
     app.UseCors();
+    app.UseAuthentication();
+    app.UseAuthorization();
     app.UseRateLimiter();
 
     // Health check endpoint
@@ -113,7 +190,69 @@ try
     app.MapGet("/", () => Results.Redirect("/swagger"))
         .ExcludeFromDescription();
 
-    // Geocode single address (returns first match)
+    // ==================== AUTH ENDPOINTS ====================
+
+    app.MapPost("/auth/register", async (RegisterRequest request, IAuthService authService) =>
+    {
+        var result = await authService.RegisterAsync(request);
+        return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+    })
+    .WithName("Register")
+    .WithDescription("Жаңа пайдаланушыны тіркеу / Регистрация нового пользователя")
+    .WithTags("Auth");
+
+    app.MapPost("/auth/login", async (LoginRequest request, IAuthService authService) =>
+    {
+        var result = await authService.LoginAsync(request);
+        return result.Success ? Results.Ok(result) : Results.Unauthorized();
+    })
+    .WithName("Login")
+    .WithDescription("Жүйеге кіру / Вход в систему")
+    .WithTags("Auth");
+
+    app.MapPost("/auth/refresh", async (RefreshTokenRequest request, IAuthService authService) =>
+    {
+        var result = await authService.RefreshTokenAsync(request.RefreshToken);
+        return result.Success ? Results.Ok(result) : Results.Unauthorized();
+    })
+    .WithName("RefreshToken")
+    .WithDescription("Access токенді жаңарту / Обновить access токен")
+    .WithTags("Auth");
+
+    app.MapPost("/auth/logout", async (RefreshTokenRequest request, IAuthService authService) =>
+    {
+        var success = await authService.RevokeTokenAsync(request.RefreshToken);
+        return success ? Results.Ok(new { message = "Logged out successfully" }) : Results.BadRequest();
+    })
+    .WithName("Logout")
+    .WithDescription("Жүйеден шығу / Выход из системы")
+    .WithTags("Auth");
+
+    // Protected endpoint example
+    app.MapGet("/auth/me", (HttpContext context) =>
+    {
+        var userId = context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        var email = context.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value;
+        var firstName = context.User.FindFirst(System.Security.Claims.ClaimTypes.GivenName)?.Value;
+        var lastName = context.User.FindFirst(System.Security.Claims.ClaimTypes.Surname)?.Value;
+        var role = context.User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+
+        return Results.Ok(new
+        {
+            id = userId,
+            email,
+            firstName,
+            lastName,
+            role
+        });
+    })
+    .RequireAuthorization()
+    .WithName("GetCurrentUser")
+    .WithDescription("Ағымдағы пайдаланушы туралы ақпарат / Информация о текущем пользователе")
+    .WithTags("Auth");
+
+    // ==================== GEOCODING ENDPOINTS ====================
+
     app.MapGet("/geocode", async (string address, IGeocodingService geocodingService) =>
     {
         var result = await geocodingService.GeocodeAsync(address);
@@ -135,7 +274,6 @@ try
     .WithTags("Geocoding")
     .RequireRateLimiting("fixed");
 
-    // Search addresses (returns multiple matches for autocomplete)
     app.MapGet("/geocode/search", async (string query, IGeocodingService geocodingService) =>
     {
         var result = await geocodingService.GeocodeMultipleAsync(query);
@@ -160,14 +298,14 @@ try
     .WithTags("Geocoding")
     .RequireRateLimiting("fixed");
 
-    // Validate address and check if it's in service zone
+    // ==================== ZONE ENDPOINTS ====================
+
     app.MapGet("/address/validate", async (
         string address,
         string city,
         IGeocodingService geocodingService,
         IZoneService zoneService) =>
     {
-        // Combine address with city for better geocoding
         var fullAddress = $"{address}, {city}, Казахстан";
         var geocodeResult = await geocodingService.GeocodeAsync(fullAddress);
 
@@ -179,7 +317,6 @@ try
         var lat = geocodeResult.Data!.Latitude;
         var lon = geocodeResult.Data.Longitude;
 
-        // Check if coordinates are in any zone
         var zone = zoneService.GetZoneForCoordinates(lat, lon);
 
         if (zone != null)
@@ -194,7 +331,6 @@ try
     .WithTags("Zones")
     .RequireRateLimiting("fixed");
 
-    // Get all service zones
     app.MapGet("/zones", (IZoneService zoneService) =>
     {
         var zones = zoneService.GetAllZones();
@@ -213,7 +349,6 @@ try
     .WithDescription("Барлық қызмет көрсету аймақтарын алу / Получить все зоны обслуживания")
     .WithTags("Zones");
 
-    // Get zones for a specific city
     app.MapGet("/zones/{city}", (string city, IZoneService zoneService) =>
     {
         var zones = zoneService.GetZonesForCity(city);

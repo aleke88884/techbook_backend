@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TechBookRentalBackend.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+cb541b232caf420954e222b63f6f92eef941a352")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ba64514d81df6895bf4ddfe0de588ed3a362f88b")]
 [assembly: System.Reflection.AssemblyProductAttribute("TechBookRentalBackend.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TechBookRentalBackend.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
