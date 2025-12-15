@@ -1,0 +1,44 @@
+# Build results
+bin/
+obj/
+out/
+
+# .NET
+*.user
+*.userosscache
+*.suo
+*.cache
+*.dll
+*.pdb
+*.exe
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+*.sln.docstates
+
+# Environment files
+.env
+*.local
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test results
+TestResults/
+coverage/
+
+# NuGet
+*.nupkg
+packages/
+
+# Secrets
+appsettings.*.local.json
+secrets.json
