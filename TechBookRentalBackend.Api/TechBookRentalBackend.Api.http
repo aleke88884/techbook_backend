@@ -1,0 +1,6 @@
+@TechBookRentalBackend.Api_HostAddress = http://localhost:5098
+
+GET {{TechBookRentalBackend.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
